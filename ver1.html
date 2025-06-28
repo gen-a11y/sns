@@ -1,0 +1,238 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI画像生成ツール</title>
+    <!-- Tailwind CSSをCDN経由で読み込み -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 flex items-center justify-center p-4">
+
+    <div class="bg-white p-8 rounded-xl shadow-2xl w-full max-w-2xl text-center">
+        <h1 class="text-3xl font-bold text-gray-800 mb-6">AI画像生成ツール</h1>
+        <p class="text-gray-600 mb-6">AIがランダムなプロンプトを生成し、そのプロンプトに基づいて画像を生成します。</p>
+
+        <!-- 生成されたプロンプト表示エリア -->
+        <div id="generatedPromptContainer" class="bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6 hidden">
+            <h2 class="text-lg font-semibold text-gray-700 mb-2">生成されたプロンプト:</h2>
+            <p id="generatedPromptText" class="text-gray-800 text-base italic"></p>
+        </div>
+
+        <!-- 画像生成ボタン -->
+        <button
+            id="generateButton"
+            class="w-full py-3 px-6 rounded-lg text-white font-semibold text-lg bg-blue-600 hover:bg-blue-700 active:scale-95 transition duration-300 ease-in-out transform focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75"
+        >
+            新しい画像を生成
+        </button>
+
+        <!-- ローディングメッセージ -->
+        <p id="loadingMessage" class="mt-4 text-blue-600 font-medium hidden">
+            <svg class="animate-spin inline-block h-5 w-5 mr-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+            </svg>
+            生成中...
+        </p>
+
+        <!-- エラーメッセージ表示 -->
+        <p id="errorMessage" class="text-red-600 mt-4 text-sm font-medium hidden"></p>
+
+        <!-- 生成された画像の表示エリア -->
+        <div id="imageContainer" class="mt-8 hidden">
+            <h2 class="text-xl font-semibold text-gray-700 mb-4">生成された画像：</h2>
+            <div class="border border-gray-300 rounded-xl overflow-hidden shadow-md">
+                <img
+                    id="generatedImage"
+                    src=""
+                    alt="生成されたAI画像"
+                    class="w-full h-auto object-contain rounded-lg"
+                />
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // DOM elements acquisition
+        const generateButton = document.getElementById('generateButton');
+        const loadingMessage = document.getElementById('loadingMessage');
+        const errorMessage = document.getElementById('errorMessage');
+        const imageContainer = document.getElementById('imageContainer');
+        const generatedImage = document.getElementById('generatedImage');
+        const generatedPromptContainer = document.getElementById('generatedPromptContainer');
+        const generatedPromptText = document.getElementById('generatedPromptText');
+
+        // API key is provided by Canvas
+        const apiKey = typeof __api_key !== 'undefined' ? __api_key : '';
+
+        // List of base concepts for random prompt generation
+        const baseConcepts = [
+            "自然の風景", "未来都市", "ファンタジーの世界", "動物のポートレート", "抽象芸術",
+            "歴史的な出来事", "SFロボット", "水中世界", "宇宙の眺め", "食べ物のクローズアップ",
+            "幻想的な生き物", "サイバーパンクなストリート", "古代遺跡", "現代建築", "静物画"
+        ];
+        // List of styles for random prompt generation
+        const styles = [
+            "油絵風", "水彩画風", "デジタルアート", "フォトリアル", "ピクセルアート",
+            "アニメ風", "漫画風", "インプレッショニズム", "ポップアート", "サイバーパンクアート",
+            "ミニマリスト", "アールデコ", "バロック"
+        ];
+        // List of moods/adjectives for random prompt generation
+        const moods = [
+            "穏やかな", "活気のある", "神秘的な", "未来的な", "レトロな",
+            "明るい", "暗い", "夢のような", "現実的な", "鮮やかな",
+            "柔らかな", "力強い", "不気味な"
+        ];
+
+        /**
+         * Function to display error messages
+         * @param {string} message - Error message to display
+         */
+        const showErrorMessage = (message) => {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        };
+
+        /**
+         * Function to generate an AI text prompt (using Gemini)
+         * This function will create a random prompt based on predefined concepts.
+         * @returns {Promise<string>} - Generated text prompt
+         */
+        const generateTextPrompt = async () => {
+            const randomConcept = baseConcepts[Math.floor(Math.random() * baseConcepts.length)];
+            const randomStyle = styles[Math.floor(Math.random() * styles.length)];
+            const randomMood = moods[Math.floor(Math.random() * moods.length)];
+
+            const promptBase = `${randomConcept}、${randomMood}雰囲気、${randomStyle}。高解像度、詳細、美しい構図。`;
+
+            // Optionally, you can send this combined prompt to Gemini to refine it further,
+            // but for simplicity and to reduce API calls, we'll use it directly.
+            // If you want Gemini to refine it, uncomment and modify the code below:
+            /*
+            const geminiPrompt = `以下の要素を含む、画像を生成するための創造的なプロンプトを日本語で作成してください。200文字以内。
+            コンセプト: ${randomConcept}
+            スタイル: ${randomStyle}
+            雰囲気: ${randomMood}
+            例: 「穏やかな夕日を背景にした、水彩画のような猫のポートレート。」`;
+
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            const chatHistory = [{ role: "user", parts: [{ text: geminiPrompt }] }];
+            const payload = { contents: chatHistory };
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`プロンプト生成APIエラー (${response.status}): ${errorData.error?.message || '不明なエラー'}`);
+            }
+
+            const result = await response.json();
+            if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                return result.candidates[0].content.parts[0].text;
+            } else {
+                throw new Error('プロンプトテキストを取得できませんでした。');
+            }
+            */
+            return promptBase; // Using the directly constructed prompt for now
+        };
+
+
+        /**
+         * Function to call AI image generation API
+         * @param {string} prompt - Prompt for image generation
+         * @returns {Promise<string>} - Base64 URL of the generated image
+         */
+        const generateImage = async (prompt) => {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+            const payload = {
+                instances: { prompt: prompt },
+                parameters: { "sampleCount": 1 }
+            };
+
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(`画像生成APIエラー (${response.status}): ${errorData.error?.message || '不明なエラー'}`);
+            }
+
+            const result = await response.json();
+            if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+                return `data:image/png;base64,${result.predictions[0].bytesBase64Encoded}`;
+            } else {
+                throw new Error('画像データを取得できませんでした。');
+            }
+        };
+
+        /**
+         * Event handler for image generation button click
+         */
+        const handleGenerateButtonClick = async () => {
+            // Reset UI state and start loading
+            errorMessage.classList.add('hidden');
+            imageContainer.classList.add('hidden');
+            generatedPromptContainer.classList.add('hidden');
+            loadingMessage.classList.remove('hidden');
+            generateButton.disabled = true; // Disable button
+
+            let generatedPrompt = '';
+
+            try {
+                // Generate a random prompt first
+                generatedPrompt = await generateTextPrompt();
+                generatedPromptText.textContent = generatedPrompt; // Display the generated prompt
+                generatedPromptContainer.classList.remove('hidden');
+
+                // Execute image generation with the generated prompt
+                const imageUrl = await generateImage(generatedPrompt);
+                // Display the generated image in the UI
+                generatedImage.src = imageUrl;
+                imageContainer.classList.remove('hidden');
+            } catch (err) {
+                // Catch and display errors
+                console.error('画像生成エラー:', err);
+                showErrorMessage(`画像生成中にエラーが発生しました: ${err.message}`);
+                // Fallback for image loading failure (only if src is set)
+                generatedImage.src = "https://placehold.co/600x400/FF0000/FFFFFF?text=画像の読み込み失敗";
+                imageContainer.classList.remove('hidden'); // Display container even on error to show placeholder
+            } finally {
+                // End loading state and re-enable button
+                loadingMessage.classList.add('hidden');
+                generateButton.disabled = false;
+            }
+        };
+
+        // Set button click event listener
+        generateButton.addEventListener('click', handleGenerateButtonClick);
+
+        // Set image loading error handler
+        generatedImage.onerror = () => {
+            // Set to execute only once to prevent infinite error loop
+            generatedImage.onerror = null;
+            generatedImage.src = "https://placehold.co/600x400/CCCCCC/333333?text=画像の読み込み失敗";
+            showErrorMessage('画像の読み込みに失敗しました。');
+            imageContainer.classList.remove('hidden');
+        };
+
+        // Generate an image on initial load
+        document.addEventListener('DOMContentLoaded', handleGenerateButtonClick);
+    </script>
+</body>
+</html>
