@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>箱庭GenSNS - AIが一般SNSユーザーの評価を勝ち取る</title>
+    <!-- Tailwind CSSをCDN経由で読み込み -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        /* カスタムスクロールバー（オプション） */
+        body::-webkit-scrollbar {
+            width: 8px;
+        }
+        body::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+        body::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+        body::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+    </style>
+</head>
+<body class="min-h-screen bg-gray-100 p-4">
+
+    <div class="max-w-xl mx-auto bg-white rounded-xl shadow-2xl overflow-hidden">
+        <!-- ヘッダー -->
+        <header class="bg-blue-600 text-white p-4 text-center rounded-t-xl shadow-md">
+            <h1 class="text-2xl font-bold">箱庭GenSNS</h1>
+            <p class="text-sm mt-1">Genインフルエンサー達がGenユーザから評価を勝ち取る</p>
+        </header>
+
+        <!-- メインフィード -->
+        <main id="feedContainer" class="p-4 space-y-6">
+            <!-- AI生成投稿がここに動的に追加されます -->
+            <p id="errorMessage" class="text-red-600 text-center font-medium hidden">エラーが発生しました。</p>
+        </main>
+
+        <!-- もっと見るボタン -->
+        <div class="p-4 text-center">
+            <button
+                id="loadMoreButton"
+                class="bg-blue-500 hover:bg-blue-600 active:scale-95 transition duration-300 ease-in-out transform text-white font-semibold py-2 px-6 rounded-lg shadow-md disabled:bg-blue-300 disabled:cursor-not-allowed"
+            >
+                もっと見る
+            </button>
+        </div>
+
+        <!-- API情報フッター -->
+        <footer class="bg-gray-800 text-white text-xs p-4 text-center rounded-b-xl mt-6">
+            <p class="mb-1">使用API:</p>
+            <p><a href="https://developers.google.com/gemini-api/docs/imagen" target="_blank" class="underline hover:text-blue-300">Imagen 3.0 (画像生成)</a></p>
+            <p><a href="https://developers.google.com/gemini-api/docs/api-key" target="_blank" class="underline hover:text-blue-300">Gemini 2.0 Flash (テキスト生成)</a></p>
+        </footer>
+    </div>
+
+    <script>
+        // DOM elements acquisition
+        const feedContainer = document.getElementById('feedContainer');
+        const loadMoreButton = document.getElementById('loadMoreButton');
+        const errorMessageElement = document.getElementById('errorMessage');
+
+        // API key is provided by Canvas
+        const apiKey = typeof __api_key !== 'undefined' ? __api_key : '';
+
+        // --- Influencer Data ---
+        const influencerPersonas = [
+            { name: "ファッションインフルエンサー", description: "最新のファッションやメイクのトレンドを紹介する。", icon: "👗" },
+            { name: "グルメインフルエンサー", description: "美味しいレストランやカフェ、レシピを発信する。", icon: "🍜" },
+            { name: "旅行インフルエンサー", description: "世界中の絶景や旅のヒントを共有する。", icon: "✈️" },
+            { name: "フィットネスインフルエンサー", description: "健康的なライフスタイルやトレーニング方法を提案する。", icon: "💪" },
+        ];
+
+        // SNSリアクションを行うユーザータイプ
+        const reactionUserTypes = [
+            { type: "ファッション好き", icon: "✨" },
+            { type: "グルメレビュアー", icon: "😋" },
+            { type: "旅行ブロガー", icon: "🗺️" },
+            { type: "フィットネス愛好家", icon: "🏋️‍♀️" },
+            { type: "テックオタク", icon: "🤓" },
+            { type: "一般的なSNSユーザー", icon: "👤" }
+        ];
+
+        // 画像のスタイルオプション (色彩オプションは削除)
+        const imageStyles = ["現代的なスタイル", "ミニマリスト", "リアルな写真"];
+
+        // API呼び出しのリトライ回数 (最大10回)
+        const MAX_RETRIES = 10;
+        // リトライ間の待機時間 (30秒)
+        const RETRY_DELAY_MS = 30 * 1000;
+
+        // 全ての投稿データを保持する配列
+        let allPosts = [];
+        let loadingTimerInterval; // ローディングタイマーのIDを保持する変数
+
+        /**
+         * Function to display error messages
+         * @param {string} message - Error message to display
+         */
+        const showErrorMessage = (message) => {
+            errorMessageElement.textContent = message;
+            errorMessageElement.classList.remove('hidden');
+        };
+
+        /**
+         * Function to select a specified number of random influencers
+         * @param {number} count - Number of influencers to select
+         * @returns {Array} - Array of randomly selected influencer objects
+         */
+        const getRandomInfluencers = (count) => {
+            const shuffled = [...influencerPersonas].sort(() => 0.5 - Math.random());
+            return shuffled.slice(0, count);
+        };
+
+        /**
+         * Utility function to pause execution for a given duration.
+         * @param {number} ms - Duration in milliseconds to sleep.
+         */
+        const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+        /**
+         * Resizes a base64 image to the specified dimensions using a canvas.
+         * @param {string} base64Url - The base64 URL of the original image.
+         * @param {number} targetWidth - The desired width.
+         * @param {number} targetHeight - The desired height.
+         * @returns {Promise<string>} - The base64 URL of the resized image.
+         */
+        const resizeImage = (base64Url, targetWidth, targetHeight) => {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.createElement('canvas');
+                    const ctx = canvas.getContext('2d');
+
+                    canvas.width = targetWidth;
+                    canvas.height = targetHeight;
+
+                    // 画像の縦横比を維持しながらフィットさせる
+                    const aspectRatio = img.width / img.height;
+                    let drawWidth = targetWidth;
+                    let drawHeight = targetHeight;
+
+                    // 描画される画像が枠を超える場合、最大の寸法を合わせる
+                    if (img.width > img.height) { // 横長の場合
+                        drawHeight = targetWidth / aspectRatio;
+                        drawWidth = targetWidth;
+                    } else if (img.height > img.width) { // 縦長の場合
+                        drawWidth = targetHeight * aspectRatio;
+                        drawHeight = targetHeight;
+                    } else { // 正方形の場合
+                        drawWidth = targetWidth;
+                        drawHeight = targetHeight;
+                    }
+
+                    // 描画位置を中央に調整
+                    const xOffset = (targetWidth - drawWidth) / 2;
+                    const yOffset = (targetHeight - drawHeight) / 2;
+
+                    ctx.drawImage(img, xOffset, yOffset, drawWidth, drawHeight);
+                    resolve(canvas.toDataURL('image/png'));
+                };
+                img.onerror = (error) => {
+                    console.error("画像リサイズ中の読み込みエラー:", error);
+                    reject(new Error("画像のリサイズに失敗しました: 画像の読み込みエラー"));
+                };
+                img.src = base64Url;
+            });
+        };
+
+
+        /**
+         * Function to call AI image generation API
+         * @param {string} prompt - Prompt for image generation
+         * @returns {Promise<string>} - Base64 URL of the generated image
+         */
+        const generateImage = async (prompt) => {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-generate-002:predict?key=${apiKey}`;
+            const payload = {
+                instances: { prompt: prompt },
+                parameters: { "sampleCount": 1 }
+            };
+
+            console.log('画像生成APIに送るAPIキー（末尾5文字）:', apiKey.slice(-5));
+            console.log('画像生成APIリクエストペイロード:', JSON.stringify(payload, null, 2));
+
+            for (let retryCount = 0; retryCount <= MAX_RETRIES; retryCount++) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.warn(`画像生成リクエストがタイムアウトしました (5分)。${retryCount + 1}/${MAX_RETRIES + 1}回目。`);
+                    controller.abort();
+                }, 5 * 60 * 1000); // 5 minutes timeout
+
+                try {
+                    console.log(`画像生成APIを呼び出し中... (${retryCount + 1}/${MAX_RETRIES + 1}回目)`);
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId); // Clear timer on success
+                    console.log('画像生成APIからの応答 (HTTPステータス):', response.status);
+
+                    let responseText = await response.text();
+                    console.log('画像生成API応答（生テキスト）:', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
+
+                    if (!responseText) {
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`APIが空の応答を返しました (HTTPステータス: ${response.status})。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`APIが空の応答を返しました (HTTPステータス: ${response.status})。`);
+                    }
+
+                    let result;
+                    try {
+                        result = JSON.parse(responseText);
+                    } catch (jsonError) {
+                        console.error('JSONパースエラー:', jsonError);
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`API応答のJSONパースに失敗しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`API応答のJSONパースに失敗しました: ${jsonError.message}. 応答: ${responseText.substring(0, 200)}...`);
+                    }
+
+                    if (!response.ok) {
+                        console.error('画像生成APIエラー詳細 (HTTPエラー応答):', JSON.stringify(result, null, 2));
+
+                        if (response.status === 401) {
+                            throw new Error(`画像生成APIエラー (401認証エラー): APIキーが無効か期限切れの可能性があります。`);
+                        } else if (retryCount < MAX_RETRIES) {
+                            console.warn(`エラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                            await sleep(RETRY_DELAY_MS);
+                            continue;
+                        } else {
+                            throw new Error(`画像生成APIエラー (${response.status}): ${result.error?.message || '不明なエラー'}`);
+                        }
+                    }
+
+                    if (result.predictions && result.predictions.length > 0 && result.predictions[0].bytesBase64Encoded) {
+                        console.log('画像データが正常に取得されました。');
+                        return `data:image/png;base64,${result.predictions[0].bytesBase64Encoded}`;
+                    } else {
+                        console.error('画像データがレスポンスに含まれていません。');
+                        console.error('`predictions[0].bytesBase64Encoded` が見つからないか空でした。');
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`画像データが応答に含まれていません。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error('APIが有効な画像データを返しませんでした。');
+                    }
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    console.error(`画像生成中に例外が発生しました (${retryCount + 1}/${MAX_RETRIES + 1}回目):`, error);
+                    if (error.name === 'AbortError') {
+                        throw new Error(`画像生成がタイムアウトしました (最大5分)。APIが応答しませんでした。`);
+                    }
+                    if (retryCount < MAX_RETRIES && (error.message.includes('Failed to fetch') || error.name === 'TypeError' || error.message.includes('APIが空の応答を返しました') || error.message.includes('JSONパースに失敗しました'))) {
+                        console.warn(`ネットワーク/応答パースエラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                        await sleep(RETRY_DELAY_MS);
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error(`画像生成APIが${MAX_RETRIES + 1}回の試行後に成功しませんでした。`);
+        };
+
+        /**
+         * Function to call AI text generation API (Gemini) for text content.
+         * @param {string} prompt - Prompt for text generation.
+         * @returns {Promise<string>} - Generated text.
+         */
+        const generateText = async (prompt) => {
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            const chatHistory = [{ role: "user", parts: [{ text: prompt }] }];
+            const payload = { contents: chatHistory };
+
+            console.log('テキスト生成APIリクエストペイロード:', JSON.stringify(payload, null, 2));
+
+            for (let retryCount = 0; retryCount <= MAX_RETRIES; retryCount++) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.warn(`テキスト生成リクエストがタイムアウトしました (1分)。${retryCount + 1}/${MAX_RETRIES + 1}回目。`);
+                    controller.abort();
+                }, 60 * 1000); // 1 minute timeout
+
+                try {
+                    console.log(`テキスト生成APIを呼び出し中... (${retryCount + 1}/${MAX_RETRIES + 1}回目)`);
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+                    console.log('テキスト生成APIからの応答 (HTTPステータス):', response.status);
+
+                    let responseText = await response.text();
+                    console.log('テキスト生成API応答（生テキスト）:', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
+
+                    if (!responseText) {
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`APIが空の応答を返しました (HTTPステータス: ${response.status})。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`APIが空の応答を返しました (HTTPステータス: ${response.status})。`);
+                    }
+
+                    let result;
+                    try {
+                        result = JSON.parse(responseText);
+                    } catch (jsonError) {
+                        console.error('JSONパースエラー:', jsonError);
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`API応答のJSONパースに失敗しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`API応答のJSONパースに失敗しました: ${jsonError.message}. 応答: ${responseText.substring(0, 200)}...`);
+                    }
+
+                    if (!response.ok) {
+                        console.error('テキスト生成APIエラー詳細 (HTTPエラー応答):', JSON.stringify(result, null, 2));
+                        if (response.status === 401) {
+                            throw new Error(`テキスト生成APIエラー (401認証エラー): APIキーが無効か期限切れの可能性があります。`);
+                        } else if (retryCount < MAX_RETRIES) {
+                            console.warn(`エラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                            await sleep(RETRY_DELAY_MS);
+                            continue;
+                        } else {
+                            throw new Error(`テキスト生成APIエラー (${response.status}): ${result.candidates?.[0]?.content?.parts?.[0]?.text || result.error?.message || '不明なエラー'}`);
+                        }
+                    }
+
+                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                        console.log('テキストデータが正常に取得されました。');
+                        return result.candidates[0].content.parts[0].text;
+                    } else {
+                        console.error('テキストデータがレスポンスに含まれていません。');
+                        console.error('`candidates[0].content.parts[0].text` が見つからないか空でした。');
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`テキストデータが応答に含まれていません。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error('APIが有効なテキストデータを返しませんでした。');
+                    }
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    console.error(`テキスト生成中に例外が発生しました (${retryCount + 1}/${MAX_RETRIES + 1}回目):`, error);
+                    if (error.name === 'AbortError') {
+                        throw new Error(`テキスト生成がタイムアウトしました (最大1分)。APIが応答しませんでした。`);
+                    }
+                    if (retryCount < MAX_RETRIES && (error.message.includes('Failed to fetch') || error.name === 'TypeError' || error.message.includes('APIが空の応答を返しました') || error.message.includes('JSONパースに失敗しました'))) {
+                        console.warn(`ネットワーク/応答パースエラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                        await sleep(RETRY_DELAY_MS);
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error(`テキスト生成APIが${MAX_RETRIES + 1}回の試行後に成功しませんでした。`);
+        };
+
+
+        /**
+         * Function to call AI text generation API (Gemini) for structured reactions.
+         * @param {string} imageConcept - The concept of the image to react to.
+         * @param {string} influencerName - The name of the influencer who posted.
+         * @param {string} captionText - The generated caption text for the post.
+         * @returns {Promise<Array<Object>>} - Array of reaction objects (user_type, comment, rating).
+         */
+        const generateReactions = async (imageConcept, influencerName, captionText) => { // Removed influencerGender parameter
+            const reactionPrompt = `以下のインフルエンサー投稿の画像コンセプトとキャプションに対して、様々なSNSユーザー視点（${reactionUserTypes.map(u => u.type).join(', ')}）から、**5つの短いコメント**と、1から5の評価点（高いほど良い）を生成してください。出力はJSON配列の形式で、各オブジェクトには 'user_type', 'comment', 'rating' フィールドを含めてください。
+            
+            インフルエンサー名: ${influencerName}
+            画像コンセプト: ${imageConcept}
+            キャプション: ${captionText}`;
+            
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+            const chatHistory = [{ role: "user", parts: [{ text: reactionPrompt }] }];
+            const payload = { 
+                contents: chatHistory,
+                generationConfig: {
+                    responseMimeType: "application/json",
+                    responseSchema: {
+                        type: "ARRAY",
+                        items: {
+                            type: "OBJECT",
+                            properties: {
+                                "user_type": { "type": "STRING" },
+                                "comment": { "type": "STRING" },
+                                "rating": { "type": "NUMBER" } // Number type for rating
+                            },
+                            "required": ["user_type", "comment", "rating"]
+                        }
+                    }
+                }
+            };
+
+            console.log('リアクション生成APIリクエストペイロード:', JSON.stringify(payload, null, 2));
+
+            for (let retryCount = 0; retryCount <= MAX_RETRIES; retryCount++) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => {
+                    console.warn(`リアクション生成リクエストがタイムアウトしました (1分)。${retryCount + 1}/${MAX_RETRIES + 1}回目。`);
+                    controller.abort();
+                }, 60 * 1000); // 1 minute timeout
+
+                try {
+                    console.log(`リアクション生成APIを呼び出し中... (${retryCount + 1}/${MAX_RETRIES + 1}回目)`);
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload),
+                        signal: controller.signal
+                    });
+
+                    clearTimeout(timeoutId);
+                    console.log('リアクション生成APIからの応答 (HTTPステータス):', response.status);
+
+                    let responseText = await response.text();
+                    console.log('リアクション生成API応答（生テキスト）:', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
+
+                    if (!responseText) {
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`APIが空の応答を返しました (HTTPステータス: ${response.status})。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`APIが空の応答を返しました (HTTPステータス: ${response.status})。`);
+                    }
+
+                    let result;
+                    try {
+                        result = JSON.parse(responseText);
+                    } catch (jsonError) {
+                        console.error('JSONパースエラー:', jsonError);
+                        if (retryCount < MAX_RETRIES) {
+                             console.warn(`API応答のJSONパースに失敗しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                             await sleep(RETRY_DELAY_MS);
+                             continue;
+                        }
+                        throw new Error(`API応答のJSONパースに失敗しました: ${jsonError.message}. 応答: ${responseText.substring(0, 200)}...`);
+                    }
+
+                    if (!response.ok) {
+                        console.error('リアクション生成APIエラー詳細 (HTTPエラー応答):', JSON.stringify(result, null, 2));
+                        if (response.status === 401) {
+                            throw new Error(`リアクション生成APIエラー (401認証エラー): APIキーが無効か期限切れの可能性があります。`);
+                        } else if (retryCount < MAX_RETRIES) {
+                            console.warn(`エラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                            await sleep(RETRY_DELAY_MS);
+                            continue;
+                        } else {
+                            throw new Error(`リアクション生成APIエラー (${response.status}): ${result.candidates?.[0]?.content?.parts?.[0]?.text || result.error?.message || '不明なエラー'}`);
+                        }
+                    }
+                    
+                    // Validate the structure of the generated reactions
+                    if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts && result.candidates[0].content.parts.length > 0) {
+                        const reactions = JSON.parse(result.candidates[0].content.parts[0].text);
+                        // Ensure exactly 5 reactions are returned, if not, fill or truncate
+                        if (Array.isArray(reactions) && reactions.every(r => typeof r.user_type === 'string' && typeof r.comment === 'string' && typeof r.rating === 'number')) {
+                            console.log('リアクションデータが正常に取得されました。');
+                            // If fewer than 5, try to fill with generic ones, if more, truncate
+                            while (reactions.length < 5) {
+                                reactions.push({ user_type: "一般的なSNSユーザー", comment: "素敵な投稿ですね！", rating: Math.floor(Math.random() * 5) + 1 });
+                            }
+                            return reactions.slice(0, 5); // Ensure exactly 5
+                        } else {
+                            console.error('生成されたリアクションの構造が不正です:', reactions);
+                            if (retryCount < MAX_RETRIES) { // リトライ条件に追加
+                                console.warn(`生成されたリアクションの構造が不正でした。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                                await sleep(RETRY_DELAY_MS);
+                                continue;
+                            }
+                            throw new Error('APIが期待される形式のリアクションデータを返しませんました。');
+                        }
+                    } else {
+                        console.error('リアクションデータがレスポンスに含まれていません。');
+                        if (retryCount < MAX_RETRIES) { // リトライ条件に追加
+                            console.warn(`リアクションデータが応答に含まれていません。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                            await sleep(RETRY_DELAY_MS);
+                            continue;
+                        }
+                        throw new Error('APIが有効なリアクションデータを返しませんでした。');
+                    }
+                } catch (error) {
+                    clearTimeout(timeoutId);
+                    console.error(`リアクション生成中に例外が発生しました (${retryCount + 1}/${MAX_RETRIES + 1}回目):`, error);
+                    if (error.name === 'AbortError') {
+                        throw new Error(`リアクション生成がタイムアウトしました (最大1分)。APIが応答しませんでした。`);
+                    }
+                    if (retryCount < MAX_RETRIES && (error.message.includes('Failed to fetch') || error.name === 'TypeError' || error.message.includes('APIが空の応答を返しました') || error.message.includes('JSONパースに失敗しました') || error.message.includes('期待される形式のリアクションデータを返しませんでした'))) {
+                        console.warn(`ネットワーク/応答パースエラー/データ形式エラーが発生しました。${retryCount + 1}回目のリトライを ${RETRY_DELAY_MS / 1000} 秒後に試みます...`);
+                        await sleep(RETRY_DELAY_MS);
+                        continue;
+                    }
+                    throw error;
+                }
+            }
+            throw new Error(`リアクション生成APIが${MAX_RETRIES + 1}回の試行後に成功しませんでした。`);
+        };
+
+
+        /**
+         * Function to fetch a single SNS post data (generate image and caption)
+         * @param {object} influencer - Influencer object
+         * @returns {Promise<object>} - Post data (name, icon, imageUrl, caption, imagePrompt, reactions, averageRating, timestamp)
+         */
+        const fetchPostData = async (influencer) => {
+            let imageUrl = "https://placehold.co/600x400/CCCCCC/333333?text=画像生成中..."; // Initial placeholder
+            let caption = "投稿内容を生成中..."; // Initial placeholder, will be replaced by AI
+            let reactions = [];
+            let averageRating = 0;
+            const timestamp = new Date(Date.now() - Math.floor(Math.random() * 86400000)).toLocaleString('ja-JP', {
+                year: 'numeric', month: 'numeric', day: 'numeric',
+                hour: '2-digit', minute: '2-digit'
+            });
+
+            // Randomly pick a style
+            const randomStyle = imageStyles[Math.floor(Math.random() * imageStyles.length)];
+            
+            // Image generation prompt: Incorporate random style
+            const imagePrompt = `${influencer.description}、${randomStyle}、ソーシャルメディア投稿に最適なコンパクトな写真`;
+            
+            // Caption generation prompt: Added instruction to avoid conversational phrases
+            const captionPrompt = `以下のインフルエンサーのタイプと説明に基づいて、短いSNS投稿文を書いてください。ハッシュタグを2〜3個含めてください。「はい、承知いたしました」のような、対話型の冒頭文は含めないでください。\n\nインフルエンサー: ${influencer.name}\n説明: ${influencer.description}\n\n投稿文:`;
+            
+            try {
+                console.log(`--- ${influencer.name} の投稿生成を開始 ---`);
+                // Generate image
+                const generatedRawImageUrl = await generateImage(imagePrompt);
+
+                // Resize the generated image to 512x512
+                try {
+                    imageUrl = await resizeImage(generatedRawImageUrl, 512, 512); // Resize to 512x512
+                    console.log('画像を512x512にリサイズしました。');
+                } catch (resizeError) {
+                    console.error('画像のリサイズ中にエラーが発生しました:', resizeError);
+                    // リサイズ失敗時は元の画像URLを使用するか、エラー画像を表示する
+                    imageUrl = "https://placehold.co/512x512/FF0000/FFFFFF?text=リサイズ失敗"; // Placeholder for failed resize
+                    // もし元の画像URLも無効な場合を考慮し、デフォルトのplaceholderを使用
+                    if (!generatedRawImageUrl) {
+                         imageUrl = "https://placehold.co/600x400/FF0000/FFFFFF?text=生成失敗"; // Fallback to original generation error placeholder
+                    } else {
+                        // リサイズに失敗したが、元の画像は取得できている場合
+                        imageUrl = generatedRawImageUrl;
+                        console.warn("画像リサイズ失敗。元の画像を表示します。");
+                    }
+                }
+                
+                // Generate main caption
+                caption = await generateText(captionPrompt); 
+                // Generate reactions (pass imagePrompt AND captionText)
+                reactions = await generateReactions(imagePrompt, influencer.name, caption);
+                
+                // Calculate average rating
+                if (reactions.length > 0) {
+                    const totalRating = reactions.reduce((sum, r) => sum + r.rating, 0);
+                    averageRating = parseFloat((totalRating / reactions.length).toFixed(1)); // Round to 1 decimal place
+                }
+
+                console.log(`--- ${influencer.name} の投稿生成が完了 ---`);
+            } catch (error) {
+                console.error(`投稿生成エラー (${influencer.name}):`, error);
+                imageUrl = "https://placehold.co/600x400/FF0000/FFFFFF?text=生成失敗"; // Error image
+                caption = `コンテンツの生成に失敗しました: ${error.message}`; // Error caption
+                reactions = [{ user_type: "システム", comment: "リアクションの生成に失敗しました。", rating: 0 }];
+                averageRating = 0;
+                // Only show overall error message once
+                if (errorMessageElement.classList.contains('hidden')) {
+                     showErrorMessage('一部の投稿の生成に失敗しました。詳細についてはコンソールを確認してください。');
+                }
+            }
+
+            return {
+                name: influencer.name,
+                icon: influencer.icon,
+                imageUrl: imageUrl,
+                caption: caption,
+                imagePrompt: imagePrompt, // Store original image prompt
+                reactions: reactions,
+                averageRating: averageRating,
+                timestamp: timestamp
+            };
+        };
+
+        /**
+         * Function to render a post element to the DOM
+         * @param {object} postData - Post data
+         * @param {number} rank - Rank of the post
+         */
+        const renderPost = (postData, rank, totalPosts) => { // Added totalPosts parameter
+            const postElement = document.createElement('div');
+            postElement.className = 'bg-white rounded-xl shadow-md p-4 mb-4 transform hover:scale-105 transition-transform duration-300 ease-in-out';
+            
+            // Reactions display
+            const reactionsHtml = postData.reactions.map(r => `
+                <div class="flex items-start text-sm bg-gray-50 p-2 rounded-lg mb-1">
+                    <span class="mr-2">${reactionUserTypes.find(u => u.type === r.user_type)?.icon || '💬'}</span>
+                    <p class="text-gray-700">
+                        <span class="font-semibold">${r.user_type}:</span> ${r.comment}
+                        <span class="text-yellow-500 ml-1">(${r.rating} / 5)</span>
+                    </p>
+                </div>
+            `).join('');
+
+
+            postElement.innerHTML = `
+                <div class="flex items-center mb-3">
+                    <span class="text-4xl mr-3">${postData.icon}</span>
+                    <div>
+                        <p class="font-bold text-gray-800 text-lg">${postData.name}</p>
+                        <p class="text-gray-500 text-xs">${postData.timestamp}</p>
+                    </div>
+                </div>
+                <div class="bg-gray-200 rounded-lg overflow-hidden mb-3 relative group flex items-center justify-center" style="width: 400px; height: 400px; margin-left: auto; margin-right: auto;">
+                    <img src="${postData.imageUrl}" alt="${postData.name}の投稿画像" class="object-contain w-full h-full rounded-lg" onerror="this.onerror=null;this.src='https://placehold.co/400x400/FF0000/FFFFFF?text=画像の読み込み失敗';" />
+                    <div class="absolute inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center p-4 text-white text-sm opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none rounded-lg text-center">
+                        <p class="font-bold mb-2">プロンプト:</p>
+                        <p class="break-words">${postData.imagePrompt}</p>
+                    </div>
+                </div>
+                <p class="text-gray-700 mb-3 whitespace-pre-wrap">${postData.caption}</p>
+                <div class="flex items-center text-gray-600 text-sm mb-3">
+                    平均評価: <span class="text-yellow-500 font-bold ml-1">${postData.averageRating} / 5</span>
+                    <span class="ml-3 px-2 py-0.5 bg-yellow-400 text-white rounded-full text-xs font-semibold shadow-md">#${rank}/${totalPosts}</span>
+                </div>
+                <div class="mt-4 border-t border-gray-200 pt-3">
+                    <h4 class="font-semibold text-gray-700 mb-2">みんなのリアクション:</h4>
+                    ${reactionsHtml || '<p class="text-gray-500 text-sm">まだリアクションがありません。</p>'}
+                </div>
+            `;
+            feedContainer.appendChild(postElement);
+        };
+
+        /**
+         * Re-renders the entire feed based on the current `allPosts` array, but without sorting.
+         */
+        const renderFeed = () => {
+            // Clear existing posts, but keep loading messages and error messages
+            const existingPostElements = feedContainer.querySelectorAll('.bg-white.rounded-xl.shadow-md');
+            existingPostElements.forEach(el => el.remove());
+
+            // Calculate ranks based on averageRating (highest rating = rank #1)
+            // Create a temporary sorted array to determine ranks
+            const sortedPosts = [...allPosts].sort((a, b) => b.averageRating - a.averageRating);
+            
+            // Assign ranks to original posts
+            const totalPosts = allPosts.length;
+            allPosts.forEach(post => {
+                const rankIndex = sortedPosts.findIndex(p => p === post); // Find its position in the sorted array
+                post.ratingRank = rankIndex + 1; // Store the rating-based rank
+            });
+
+            // Render all posts in their original (generation) order
+            allPosts.forEach((post) => {
+                renderPost(post, post.ratingRank, totalPosts); // Pass calculated ratingRank and totalPosts
+            });
+        };
+
+
+        /**
+         * Function to load more posts
+         * Processes each post sequentially with a delay to mitigate API rate limits.
+         * @param {number} count - Number of posts to load
+         */
+        const loadMorePosts = async (count = 3) => { // Default to 3 posts
+            loadMoreButton.disabled = true; // Disable button
+            
+            const loadingIndicator = document.createElement('p');
+            loadingIndicator.id = 'loadingIndicator'; // IDを追加
+            loadingIndicator.className = 'text-center text-blue-600 font-medium my-4 loading-indicator';
+            loadingIndicator.innerHTML = `
+                <svg class="animate-spin inline-block h-5 w-5 mr-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                </svg>
+                <span>新しい投稿を生成中...</span>
+                <br>
+                <span class="text-sm text-gray-700 mt-2 block">
+                    生成には2分以上かかる場合があります。<br>
+                    APIKeyの使用状況やアクセス状況によっては、画像や投稿が生成されないことがあります。<br>
+                    ※読み込み機能は予算の関係でダミーになっています。
+                </span>
+                <br>
+                <span id="elapsedTime" class="text-sm text-gray-800 font-semibold">経過時間: 0秒</span>
+            `;
+            // ローディングインジケーターをフィードの末尾に追加
+            feedContainer.appendChild(loadingIndicator);
+
+            let secondsElapsed = 0;
+            const startTime = Date.now();
+            // タイマーを開始
+            loadingTimerInterval = setInterval(() => {
+                secondsElapsed = Math.floor((Date.now() - startTime) / 1000);
+                const minutes = Math.floor(secondsElapsed / 60);
+                const seconds = secondsElapsed % 60;
+                document.getElementById('elapsedTime').textContent = `経過時間: ${minutes}分${seconds}秒`;
+            }, 1000);
+
+            errorMessageElement.classList.add('hidden'); // Hide existing error message
+
+            const influencersToLoad = getRandomInfluencers(count);
+
+            try {
+                for (const influencer of influencersToLoad) {
+                    const post = await fetchPostData(influencer); // Wait for each post
+                    allPosts.push(post); // Add new post to the allPosts array
+                    await sleep(1500); // Add a 1.5-second delay after each post generation
+                }
+                renderFeed(); // Re-render the entire feed
+            } catch (error) {
+                console.error("投稿の読み込み中にエラー:", error);
+                showErrorMessage('投稿の読み込み中に問題が発生しました。' + error.message);
+            } finally {
+                clearInterval(loadingTimerInterval); // タイマーを停止
+                loadingIndicator.remove(); // Remove loading indicator
+                loadMoreButton.disabled = false; // Re-enable button
+            }
+        };
+
+        // Application initialization
+        const initApp = async () => {
+            await loadMorePosts(3); // Load 3 initial posts
+        };
+
+        // Event listeners
+        document.addEventListener('DOMContentLoaded', initApp); // Initialize app after DOM load
+        loadMoreButton.addEventListener('click', () => loadMorePosts(3)); // Load 3 more posts on button click
+    </script>
+</body>
+</html>
